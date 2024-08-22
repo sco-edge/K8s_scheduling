@@ -1,4 +1,3 @@
-// incomplete
 package scheduler
 
 import (
@@ -7,11 +6,16 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/internal/queue"
 	"k8s.io/kubernetes/pkg/scheduler/profile"
 )
+
+type Cache interface {
+	ListNodes() ([]*v1.Node, error)
+}
 
 type Scheduler struct {
 	Cache     Cache
@@ -76,6 +80,9 @@ func (sched *Scheduler) findNodesThatFit(ctx context.Context, pod *v1.Pod) ([]st
 }
 
 func (sched *Scheduler) podFitsOnNode(pod *v1.Pod, node *v1.Node) (bool, error) {
+	if node.Status.Allocatable.Cpu().Cmp(pod.Spec.Containers[0].Resources.Requests.Cpu()) < 0 {
+		return false, nil
+	}
 
 	return true, nil
 }
@@ -88,9 +95,61 @@ func (sched *Scheduler) selectHost(ctx context.Context, pod *v1.Pod, nodes []str
 }
 
 func (sched *Scheduler) bind(ctx context.Context, pod *v1.Pod, host string) error {
+	binding := &v1.Binding{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: pod.Namespace,
+			Name:      pod.Name,
+			UID:       pod.UID,
+		},
+		Target: v1.ObjectReference{
+			Kind: "Node",
+			Name: host,
+		},
+	}
+
+	err := sched.Framework.Handle().ClientSet().CoreV1().Pods(pod.Namespace).Bind(ctx, binding, metav1.CreateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to bind pod: %v", err)
+	}
 	return nil
 }
 
+func (sched *Scheduler) NextPod() *v1.Pod {
+	pod, err := sched.PodQueue.Pop()
+	if err != nil {
+		klog.ErrorS(err, "Failed to pop pod from scheduling queue")
+		return nil
+	}
+	return pod
+}
+
+type ScheduleResult struct {
+	SuggestedHost  string
+	EvaluatedNodes int
+	FeasibleNodes  int
+}
+
 func main() {
-	//incomplete
+	ctx := context.Background()
+
+	sched := &Scheduler{
+		Cache:     NewCache(),
+		Extenders: nil,
+		Framework: NewFramework(),
+		PodQueue:  queue.NewSchedulingQueue(),
+		Profiles:  profile.NewMap(),
+	}
+
+	for {
+		pod := sched.NextPod()
+		if pod == nil {
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		_, err := sched.SchedulePod(ctx, pod)
+		if err != nil {
+			klog.ErrorS(err, "Failed to schedule pod", "pod", klog.KObj(pod))
+		}
+	}
 }
