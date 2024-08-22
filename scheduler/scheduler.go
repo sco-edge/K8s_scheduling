@@ -75,7 +75,6 @@ func (sched *Scheduler) findNodesThatFit(ctx context.Context, pod *v1.Pod) ([]st
 			feasibleNodes = append(feasibleNodes, node.Name)
 		}
 	}
-
 	return feasibleNodes, nil
 }
 
